@@ -1,0 +1,30 @@
+server:
+  port: 8081
+
+spring:
+  application:
+    name: ingest-api
+  kafka:
+    # localhost:29092 when running from your terminal/IDE; Docker Compose sets kafka:9092.
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all                       # leader + in-sync replicas must have the event
+      properties:
+        enable.idempotence: true      # retries never create duplicates inside Kafka
+        linger.ms: 5                  # tiny wait so batch requests become one Kafka batch
+        max.block.ms: 5000            # fail fast (-> HTTP 503) when Kafka is down
+        request.timeout.ms: 5000
+        delivery.timeout.ms: 10000
+
+app:
+  kafka:
+    topic: device.status
+    partitions: 6
+    replication-factor: 1
+    send-timeout-ms: 15000
+
+logging:
+  level:
+    org.apache.kafka: WARN

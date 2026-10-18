@@ -1,0 +1,45 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: status-service
+  datasource:
+    # localhost when running from your terminal/IDE; Docker Compose sets the container addresses.
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/devicestatus}
+    username: ${DB_USER:devicestatus}
+    password: ${DB_PASSWORD:devicestatus}
+  flyway:
+    enabled: true                  # creates the tables from db/migration on startup
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP_SERVERS:localhost:29092}
+    consumer:
+      group-id: device-status-service
+      auto-offset-reset: earliest  # a brand-new group starts from the oldest message
+      enable-auto-commit: false    # offsets are committed by Spring after processing
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      max-poll-records: 500
+    producer:                      # only used to publish to the dead-letter topic
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      acks: all
+
+app:
+  kafka:
+    topic: device.status
+    partitions: 6
+    replication-factor: 1
+    dlq-topic: device.status.dlq
+    consumer-concurrency: 3        # 3 threads x 2 partitions each
+    retry:
+      max-attempts: 5              # 1 s, 2 s, 4 s, 8 s, 10 s, then dead-letter
+      initial-interval: 1s
+      multiplier: 2.0
+      max-interval: 10s
+  validation:
+    max-future-skew: 5m
+
+logging:
+  level:
+    org.apache.kafka: WARN
