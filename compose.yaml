@@ -1,0 +1,122 @@
+# Device Status Management System - local stack
+#
+#   docker compose up -d --build                      start everything
+#   docker compose run --rm simulator seed --verify   send 5,000 events and check the result
+#   open http://localhost:3000                         dashboard
+#
+name: device-status
+
+services:
+  kafka:
+    image: apache/kafka:3.8.0
+    ports:
+      - "29092:29092"   # for running the Java services / simulator from your host instead of Docker
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller   # single-node KRaft (no ZooKeeper)
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,EXTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,EXTERNAL://localhost:29092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      # Topics are created by the services with an explicit partition count (6).
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+    # Messages survive `docker compose restart/stop`; `docker compose down` starts Kafka fresh.
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 > /dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 15s
+
+  # Web UI to look at topics, partitions, messages and consumer-group lag: http://localhost:8090
+  kafka-ui:
+    image: provectuslabs/kafka-ui:v0.7.2
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_DB: devicestatus
+      POSTGRES_USER: devicestatus
+      POSTGRES_PASSWORD: devicestatus
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devicestatus -d devicestatus"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  ingest-api:
+    build:
+      context: ./backend
+      dockerfile: ingest-api/Dockerfile
+    ports:
+      - "8081:8081"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
+  status-service:
+    build:
+      context: ./backend
+      dockerfile: status-service/Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      DB_URL: jdbc:postgresql://postgres:5432/devicestatus
+      DB_USER: devicestatus
+      DB_PASSWORD: devicestatus
+    depends_on:
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+  frontend:
+    build: ./frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - status-service
+
+  # Not started by `up`. Run on demand:
+  #   docker compose run --rm simulator seed --verify
+  #   docker compose run --rm simulator live
+  #   docker compose run --rm simulator scenario
+  simulator:
+    image: node:22-alpine
+    profiles: ["tools"]
+    working_dir: /sim
+    volumes:
+      - ./simulator:/sim:ro
+    entrypoint: ["node", "simulate.mjs"]
+    command: ["--help"]
+    environment:
+      INGEST_URL: http://ingest-api:8081
+      STATUS_URL: http://status-service:8080
+    depends_on:
+      - ingest-api
+
+volumes:
+  postgres-data:
